@@ -14,7 +14,6 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor
 import org.springframework.data.repository.query.Param
 import org.springframework.web.bind.annotation.*
 import java.io.FileInputStream
-import java.util.*
 import javax.persistence.Entity
 import javax.persistence.GeneratedValue
 import javax.persistence.GenerationType
@@ -23,8 +22,8 @@ import javax.persistence.Id
 
 @SpringBootApplication
 class DemoApplication {
-    val firebaseConfigPath = "path/to/firebase/config.json"
-    val firebaseDatabseUrl = "UrlOfFirebase.com"
+    val firebaseConfigPath = "C:\\SpringBootKotlinDemo\\src\\main\\resources\\service-account.json"
+    val firebaseDatabseUrl = "https://sample-spring.firebaseio.com/"
 
 
     //Spring will automatically call this function and inject the return value into other places where it's needed
@@ -86,14 +85,18 @@ interface PersonRepository : JpaRepository<Person, Long>, JpaSpecificationExecut
 @RequestMapping("persons")
 class PersonsController(val personRepository: PersonRepository, val databaseReference: DatabaseReference) {
     @GetMapping
-    fun getAllPeople() = personRepository.findAll()
+    fun getAllPeople() = personRepository.findAll() //if something is changed in the firebase database, it won't be changed in the
+    //repository because the repository isn't listening to the firebase
 
     @GetMapping("{id}")
     fun getAllPeople(@PathVariable id: Long) = personRepository.findOne(id)
 
 
     @PostMapping
-    fun createPerson(@RequestBody person: Person) = databaseReference.child(UUID.randomUUID().toString()).setValue(person)
+    fun createPerson(@RequestBody person: Person) {
+        personRepository.save(person)
+        databaseReference.child(person.id.toString()).setValue(person)
+    }
 
     @GetMapping("kotlin")
     fun GetAllKotlinLovers() = personRepository.findAllKotlinLovers()

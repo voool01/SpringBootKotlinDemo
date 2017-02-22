@@ -1,46 +1,92 @@
 package com.example
 
 import au.com.console.jpaspecificationdsl.equal
+import com.google.common.base.Predicates
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
-import com.google.firebase.database.DatabaseReference
-import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.*
+import io.swagger.annotations.Api
+import io.swagger.annotations.ApiOperation
 import org.springframework.boot.CommandLineRunner
 import org.springframework.boot.SpringApplication
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor
 import org.springframework.data.repository.query.Param
+import org.springframework.validation.DataBinder
+import org.springframework.validation.Errors
+import org.springframework.validation.ValidationUtils
+import org.springframework.validation.Validator
 import org.springframework.web.bind.annotation.*
+import springfox.documentation.builders.PathSelectors
+import springfox.documentation.builders.RequestHandlerSelectors
+import springfox.documentation.service.ApiInfo
+import springfox.documentation.service.Contact
+import springfox.documentation.spi.DocumentationType
+import springfox.documentation.spring.web.plugins.Docket
+import springfox.documentation.swagger2.annotations.EnableSwagger2
 import java.io.FileInputStream
+import java.util.UUID
 import javax.persistence.Entity
-import javax.persistence.GeneratedValue
-import javax.persistence.GenerationType
 import javax.persistence.Id
 
 
 @SpringBootApplication
 class DemoApplication {
-    val firebaseConfigPath = "C:\\SpringBootKotlinDemo\\src\\main\\resources\\service-account.json"
-    val firebaseDatabseUrl = "https://sample-spring.firebaseio.com/"
+    val firebaseConfigPath = "path/to/your/config/json"
+    val firebaseDatabseUrl = "your-firebase-url"
 
-
-    //Spring will automatically call this function and inject the return value into other places where it's needed
-    //We don't need the return value, so we are just using the @Bean annotation to automatically populate the database
-    //Spring will determine where it needs to find the person repository and the databaseReference
     @Bean
     fun init(repository: PersonRepository, fb: DatabaseReference) = CommandLineRunner {
-        repository.save(Person("Jon", "Snow"))
-        repository.save(Person("Daenerys", "Targaryen"))
-        repository.save(Person("Tyrion", "Lannister"))
-        repository.save(Person("Cersei", "Lannister", "javascript"))
-        repository.save(Person("Sansa", "Stark", "java"))
+        /*
+         * Firebase Listeners to update the Person Repository
+         */
+        fb.addChildEventListener(object : ChildEventListener {
+            override fun onChildAdded(dataSnapshot: DataSnapshot?, key : String?) {
+                val newPerson = dataSnapshot!!.getValue(Person::class.java)
+                println("Child Added:")
+                println(newPerson)
+                repository.validateAndSave(newPerson, fb, dataSnapshot!!.key)
+            }
 
-        repository.findAll().forEach { fb.child(it.id.toString()).setValue(it) }
+            override fun onChildChanged(dataSnapshot: DataSnapshot?, key: String?) {
+                val changedPerson = dataSnapshot!!.getValue(Person::class.java)
+                println("Child Changed:")
+                println(changedPerson)
+                repository.validateAndSave(changedPerson, fb, dataSnapshot!!.key)
+            }
+
+            override fun onChildRemoved(dataSnapshot: DataSnapshot?) {
+                val deletedPerson = dataSnapshot!!.getValue(Person::class.java)
+                println("Child Deleted:")
+                println(deletedPerson)
+                repository.delete(deletedPerson)
+            }
+
+            override fun onChildMoved(dataSnapshot: DataSnapshot?, key: String?) {
+            }
+
+            override fun onCancelled(databaseError: DatabaseError?) {
+                if (databaseError != null) {
+                    throw databaseError.toException()
+                }
+            }
+
+        })
+
+        //These People will be added to the Repository by the Listeners
+        listOf(
+                Person("Jon", "Snow", "kotlin"),
+                Person("Daenerys", "Targaryen", "kotlin"),
+                Person("Tyrion", "Lannister", "kotlin"),
+                Person("Cersei", "Lannister", "javascript"),
+                Person("Sansa", "Stark", "java")
+        ).forEach{fb.child(it.id).setValue(it)}
+
     }
 
-    //Spring will automatically call this function and inject the return value into other places where it's needed
     @Bean
     fun initFirebase(): DatabaseReference {
         val options = FirebaseOptions.Builder()
@@ -54,56 +100,177 @@ class DemoApplication {
     }
 }
 
-
-//Top level functions allow one to define a spring application without wrapping it in a class.
 fun main(args: Array<String>) {
     SpringApplication.run(DemoApplication::class.java, *args)
 }
 
 @Entity
 data class Person(
-        val firstName: String,
-        val lastName: String?, //Spring will use the nullable information to infer that this field is not required when making a POST request
-        val favoriteLanguage: String = "kotlin", //Default values will also be used
-        @Id @GeneratedValue(strategy = GenerationType.AUTO)
-        val id: Long = 0 //A default value for this is set so we don't have to supply an id when initializing the repository in the init function
+        var firstName: String? = null,
+        var lastName: String? = null,
+        var favoriteLanguage: String? = null,
+        @Id
+        val id: String = UUID.randomUUID().toString()
 )
 
-//Spring will generate an implementation for this interface and make it available for injection at other locations.
-//The JpaSpecificationExecutor interface is needed so we can use the jpa specification dsl to define custom methods.
-interface PersonRepository : JpaRepository<Person, Long>, JpaSpecificationExecutor<Person> {
+data class PersonRequest(
+        val firstName: String? = null,
+        val lastName: String? = null,
+        val favoriteLanguage: String? = null
+) {
+    fun toPerson() = Person(
+            firstName = firstName,
+            lastName = lastName,
+            favoriteLanguage = favoriteLanguage ?: "kotlin"
+    )
 
-    //Spring has a set of key words that can be used to write queries in plain english that translate to sql queries.
-    //The @Param annotation will be exposed as a query parameter using Spring Data Rest
+    fun toPerson(id: String) = Person(
+            id = id,
+            firstName = firstName,
+            lastName = lastName,
+            favoriteLanguage = favoriteLanguage ?: "kotlin"
+    )
+}
+
+infix fun Person.patchedWith(request: PersonRequest) : Person {
+    firstName = request.firstName ?: firstName
+    lastName = request.lastName ?: lastName
+    favoriteLanguage = request.favoriteLanguage ?: favoriteLanguage
+    return this
+}
+
+interface PersonRepository : JpaRepository<Person, String>, JpaSpecificationExecutor<Person> {
     fun findByLastNameIgnoreCase(@Param("lastName") name: String): List<Person>
 }
 
+/*
+ * Called when listeners detect an added or changed child.
+ * Validates the child and if its a valid child, it saves it to the repository.
+ * Else, it is deleted from Firebase.
+ */
+fun PersonRepository.validateAndSave(person: Person, fb: DatabaseReference, key : String) {
+    if (!person.id.equals(key))
+        fb.child(key).removeValue() //Checks to make sure the key and the id are equal
 
-//If one does not want the 'automatic magical rest api' then one can define a controller the traditional way. This class defines a base path of /persons with sub paths of /persons/{id} and /persons/kotlin/
-//The personRepository and databse reference are automatically injected from springs object graph. No need to annotate with @autowire.
+    val binder = DataBinder(person)
+    binder.validator = PersonValidator()
+    binder.validate()
+
+    val results = binder.bindingResult
+    if (results.hasFieldErrors())
+        fb.child(key).removeValue()
+
+    save(person)
+}
+
+/*
+ * Called when a PATCH/PUT/POST REST Call is made
+ * Validates the sent Person Object and if it is valid,
+ * it is pushed to Firebase.
+ * Else, an exception is thrown.
+ */
+fun DatabaseReference.validateAndSave(person: Person) : Person {
+    val binder = DataBinder(person)
+    binder.validator = PersonValidator()
+    binder.validate()
+
+    val results = binder.bindingResult
+    if (results.hasFieldErrors())
+        throw Exception(results.fieldErrors.toString())
+
+    this.child(person.id).setValue(person)
+    return person
+}
+
 @RestController
 @RequestMapping("persons")
+@Api(value = "Persons")
 class PersonsController(val personRepository: PersonRepository, val databaseReference: DatabaseReference) {
     @GetMapping
-    fun getAllPeople() = personRepository.findAll() //if something is changed in the firebase database, it won't be changed in the
-    //repository because the repository isn't listening to the firebase
+    @ApiOperation(value = "Get All People")
+    fun getAllPeople() = personRepository.findAll()
 
     @GetMapping("{id}")
-    fun getAllPeople(@PathVariable id: Long) = personRepository.findOne(id)
-
+    @ApiOperation(value = "Get People By Id")
+    fun getAllPeople(@PathVariable id: String) = personRepository.findOne(id)
 
     @PostMapping
-    fun createPerson(@RequestBody person: Person) {
-        personRepository.save(person)
-        databaseReference.child(person.id.toString()).setValue(person)
-    }
+    @ApiOperation(value = "Create People")
+    fun createPerson(@RequestBody request: PersonRequest) = databaseReference.validateAndSave(request.toPerson())
+
+    @PatchMapping("{id}")
+    @ApiOperation(value = "Update People")
+    fun updatePerson(@PathVariable id : String, @RequestBody request: PersonRequest) =
+    if(personRepository.exists(id)) databaseReference.validateAndSave(personRepository.findOne(id).patchedWith(request))
+    else throw Exception("Person with id $id not found")
+
+    @PutMapping("{id}")
+    @ApiOperation(value = "Replace People")
+    fun replacePerson(@PathVariable id : String, @RequestBody request: PersonRequest) =
+            if(personRepository.exists(id)) databaseReference.validateAndSave(request.toPerson(id))
+            else throw Exception("Person with id $id not found")
+
+    @DeleteMapping("{id}")
+    @ApiOperation(value = "Delete People")
+    fun deletePerson(@PathVariable id : String) : Person =
+            if(personRepository.exists(id)) {
+                val person = personRepository.findOne(id)
+                databaseReference.child(id).removeValue()
+                person
+            }
+            else throw Exception("Person with id $id not found")
 
     @GetMapping("kotlin")
+    @ApiOperation(value = "Get People Who Love Kotlin")
     fun GetAllKotlinLovers() = personRepository.findAllKotlinLovers()
 }
 
-//Kotlin extension functions provide an easy way to make custom query methods
 private fun PersonRepository.findAllKotlinLovers(): List<Person> =
-        //The kotlin jpa specification dsl provices an easy idiomatic way to define complex queries
         findAll(Person::favoriteLanguage.equal("kotlin"))
 
+@Configuration
+@EnableSwagger2
+open class SwaggerConfig {
+    @Bean
+    open fun swaggerConfigDocket(): Docket {
+        return Docket(DocumentationType.SWAGGER_2)
+                .select()
+                .apis(Predicates.not(RequestHandlerSelectors.basePackage("org.springframework.boot")))
+                .paths(PathSelectors.any())
+                .build()
+                .apiInfo(apiInfo())
+    }
+
+    private fun apiInfo(): ApiInfo {
+        val apiInfo = ApiInfo(
+                "Person API",
+                "Firebase Spring Person Example",
+                "v0.0.1",
+                "",
+                Contact("", "", ""),
+                "",
+                "")
+        return apiInfo
+    }
+}
+
+class PersonValidator : Validator {
+    override fun supports(clazz: Class<*>?): Boolean {
+        return Person::class.java.isAssignableFrom(clazz)
+    }
+
+    override fun validate(target: Any?, errors: Errors?) {
+        ValidationUtils.rejectIfEmptyOrWhitespace(
+                errors,
+                "firstName",
+                "firstName.field.required",
+                "The request body must contain a non-null" +
+                        "non-empty \"firstName\" String")
+        ValidationUtils.rejectIfEmptyOrWhitespace(
+                errors,
+                "id",
+                "id.field.required",
+                "The request body must contain a non-null" +
+                        "non-empty \"id\" String")
+    }
+}

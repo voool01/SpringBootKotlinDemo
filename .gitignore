@@ -3,6 +3,9 @@ build/
 out/
 .idea/
 
+#Ignore Firebase Service Account Key
+google-services.json
+
 # Ignore Gradle GUI config
 gradle-app.setting
 

@@ -1,9 +1,6 @@
 package com.example.validate
 
 import com.example.model.Person
-import com.example.model.api.PersonRequest
-
-import com.google.firebase.database.DatabaseReference
 
 import org.springframework.validation.DataBinder
 import org.springframework.validation.Errors
@@ -31,22 +28,12 @@ class PersonValidator : Validator {
     }
 }
 
-/*
- * Called when listeners detect an added or changed child.
- * Validates the child and if its a valid child, it saves it to the repository.
- * Else, it is deleted from Firebase.
- */
-fun validate(person: Person, fb: DatabaseReference, key: String) {
-    //Checks to make sure the key and the id are equal
-    //If they aren't, set id to key value
-    if (!person.id.equals(key))
-        fb.child(key).setValue(PersonRequest(person.firstName, person.lastName, person.favoriteLanguage).toPerson(key))
-
+fun validate(person: Person) {
     val binder = DataBinder(person)
     binder.validator = PersonValidator()
     binder.validate()
 
     val results = binder.bindingResult
     if (results.hasFieldErrors())
-        fb.child(key).removeValue()
+        throw Exception(results.fieldErrors.toString())
 }
